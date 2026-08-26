@@ -18,7 +18,7 @@
 					<h2
 						class="text-xl font-semibold text-gray-900 whitespace-nowrap overflow-hidden text-ellipsis"
 					>
-						{{ __(props.doctype) }}
+						{{ props.title || __(props.doctype) }}
 					</h2>
 					<Badge
 						:label="id"
@@ -55,7 +55,7 @@
 					/>
 				</div>
 				<h2 v-else class="text-2xl font-semibold text-gray-900">
-					{{ __('New {0}', [__(doctype)], props.doctype) }}
+					{{ props.title ? __("New {0}", [props.title]) : __('New {0}', [__(doctype)], props.doctype) }}
 				</h2>
 			</header>
 
@@ -94,6 +94,20 @@
 									:name="field.fieldname"
 									:isFormReadOnly="isFormReadOnly"
 								></slot>
+
+								<div
+									v-else-if="field.fieldtype === 'Section Break'"
+									class="flex flex-row items-center justify-between"
+								>
+									<FormField
+										:fieldtype="field.fieldtype"
+										:fieldname="field.fieldname"
+										:label="__(field.label, null, props.doctype)"
+										:hidden="Boolean(field.hidden)"
+										:addSectionPadding="fieldList[0].name !== field.name"
+									/>
+									<slot :name="`${field.fieldname}-action`"></slot>
+								</div>
 
 								<FormField
 									v-else
@@ -135,24 +149,38 @@
 				</template>
 
 				<div class="flex flex-col space-y-4 p-4" v-else>
-					<FormField
-						v-for="field in props.fields"
-						:key="field.name"
-						:fieldtype="field.fieldtype"
-						:fieldname="field.fieldname"
-						v-model="formModel[field.fieldname]"
-						:default="field.default"
-						:label="__(field.label, null, props.doctype)"
-						:options="field.options"
-						:linkFilters="field.linkFilters"
-						:documentList="field.documentList"
-						:readOnly="isFieldReadOnly(field)"
-						:reqd="Boolean(field.reqd)"
-						:hidden="Boolean(field.hidden)"
-						:errorMessage="field.error_message"
-						:minDate="field.minDate"
-						:maxDate="field.maxDate"
-					/>
+					<template v-for="field in props.fields" :key="field.name">
+						<div
+							v-if="field.fieldtype === 'Section Break'"
+							class="flex flex-row items-center justify-between"
+						>
+							<FormField
+								:fieldtype="field.fieldtype"
+								:fieldname="field.fieldname"
+								:label="__(field.label, null, props.doctype)"
+								:hidden="Boolean(field.hidden)"
+							/>
+							<slot :name="`${field.fieldname}-action`"></slot>
+						</div>
+
+						<FormField
+							v-else
+							:fieldtype="field.fieldtype"
+							:fieldname="field.fieldname"
+							v-model="formModel[field.fieldname]"
+							:default="field.default"
+							:label="__(field.label, null, props.doctype)"
+							:options="field.options"
+							:linkFilters="field.linkFilters"
+							:documentList="field.documentList"
+							:readOnly="isFieldReadOnly(field)"
+							:reqd="Boolean(field.reqd)"
+							:hidden="Boolean(field.hidden)"
+							:errorMessage="field.error_message"
+							:minDate="field.minDate"
+							:maxDate="field.maxDate"
+						/>
+					</template>
 
 					<!-- Attachment upload -->
 					<div
@@ -384,6 +412,10 @@ const props = defineProps({
 		type: Boolean,
 		required: false,
 		default: false,
+	},
+	title: {
+		type: String,
+		required: false,
 	},
 })
 const emit = defineEmits(["validateForm", "update:modelValue", "formReloaded"])

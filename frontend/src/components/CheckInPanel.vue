@@ -32,7 +32,8 @@
 					:options="field.options"
 					:reqd="field.reqd"
 					:readOnly="isFieldLocked(field.fieldname)"
-					:linkFilters="field.fieldname === 'task' ? taskLinkFilters : undefined"
+					:linkFilters="linkFiltersFor(field.fieldname)"
+					:query="queryFor(field.fieldname)"
 					:modelValue="isFieldLocked(field.fieldname) ? lastLog[field.fieldname] : timesheetDetail[field.fieldname]"
 					@update:modelValue="(v) => (timesheetDetail[field.fieldname] = v)"
 				/>
@@ -184,9 +185,14 @@ const taskDateFilter = ref({ from_date: null, to_date: null })
 // Overlap, not containment: a task matches if its own start/end span
 // touches the filter window at all — its start is on/before the filter's
 // end, and its end is on/after the filter's start.
+// Task must only list Tasks assigned (via "Assign To") to the current
+// employee - not every Task in the system. Scoped server-side via `taskQuery`
+// (voltamp_fca.voltamp_fca.permissions.task_query), which also applies the
+// date range below.
+const taskQuery = "voltamp_fca.voltamp_fca.permissions.task_query"
 const taskLinkFilters = computed(() => {
 	const { from_date, to_date } = taskDateFilter.value
-	const filters = {}
+	const filters = { employee: employee.data.name }
 	if (to_date) filters.exp_start_date = ["<=", to_date]
 	if (from_date) filters.exp_end_date = [">=", from_date]
 	return filters
@@ -194,6 +200,25 @@ const taskLinkFilters = computed(() => {
 
 function clearTaskFilter() {
 	taskDateFilter.value = { from_date: null, to_date: null }
+}
+
+// Activity Type must only list the options in the current employee's
+// Employee Skill Map "Work Profile" (see voltamp_fca's employee_checkin.js
+// on desk). Recomputed off the injected employee so it refetches if that
+// context ever changes.
+const activityTypeQuery = "voltamp_fca.voltamp_fca.permissions.activity_type_query"
+const activityTypeFilters = computed(() => ({ employee: employee.data.name }))
+
+function linkFiltersFor(fieldname) {
+	if (fieldname === "task") return taskLinkFilters.value
+	if (fieldname === "activity_type") return activityTypeFilters.value
+	return undefined
+}
+
+function queryFor(fieldname) {
+	if (fieldname === "task") return taskQuery
+	if (fieldname === "activity_type") return activityTypeQuery
+	return undefined
 }
 
 const taskProject = createResource({ url: "frappe.client.get_value" })

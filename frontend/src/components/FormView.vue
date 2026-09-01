@@ -118,6 +118,7 @@
 									:label="__(field.label, null, props.doctype)"
 									:options="field.options"
 									:linkFilters="field.linkFilters"
+									:query="field.query"
 									:documentList="field.documentList"
 									:readOnly="isFieldReadOnly(field)"
 									:reqd="Boolean(field.reqd)"
@@ -127,6 +128,8 @@
 									:maxDate="field.maxDate"
 									:addSectionPadding="fieldList[0].name !== field.name"
 								/>
+
+								<slot :name="`${field.fieldname}-after`"></slot>
 							</template>
 
 							<!-- Attachment upload -->
@@ -172,6 +175,7 @@
 							:label="__(field.label, null, props.doctype)"
 							:options="field.options"
 							:linkFilters="field.linkFilters"
+							:query="field.query"
 							:documentList="field.documentList"
 							:readOnly="isFieldReadOnly(field)"
 							:reqd="Boolean(field.reqd)"
@@ -180,6 +184,8 @@
 							:minDate="field.minDate"
 							:maxDate="field.maxDate"
 						/>
+
+						<slot :name="`${field.fieldname}-after`"></slot>
 					</template>
 
 					<!-- Attachment upload -->

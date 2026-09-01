@@ -30,6 +30,7 @@
 			:doctype="props.options"
 			:modelValue="modelValue"
 			:filters="props.linkFilters"
+			:query="props.query"
 			:disabled="isReadOnly"
 			@update:modelValue="(v) => emit('update:modelValue', v)"
 		/>
@@ -165,6 +166,7 @@ const props = defineProps({
 	label: String,
 	options: [String, Array],
 	linkFilters: Object,
+	query: String,
 	documentList: Array,
 	readOnly: [Boolean, Number],
 	reqd: [Boolean, Number],

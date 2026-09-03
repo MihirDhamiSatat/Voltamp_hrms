@@ -187,9 +187,9 @@ const taskDateFilter = ref({ from_date: null, to_date: null })
 // end, and its end is on/after the filter's start.
 // Task must only list Tasks assigned (via "Assign To") to the current
 // employee - not every Task in the system. Scoped server-side via `taskQuery`
-// (voltamp_fca.voltamp_fca.permissions.task_query), which also applies the
+// (voltamp_fca.voltamp_fca.permission.task.task_query), which also applies the
 // date range below.
-const taskQuery = "voltamp_fca.voltamp_fca.permissions.task_query"
+const taskQuery = "voltamp_fca.voltamp_fca.permission.task.task_query"
 const taskLinkFilters = computed(() => {
 	const { from_date, to_date } = taskDateFilter.value
 	const filters = { employee: employee.data.name }
@@ -206,7 +206,7 @@ function clearTaskFilter() {
 // Employee Skill Map "Work Profile" (see voltamp_fca's employee_checkin.js
 // on desk). Recomputed off the injected employee so it refetches if that
 // context ever changes.
-const activityTypeQuery = "voltamp_fca.voltamp_fca.permissions.activity_type_query"
+const activityTypeQuery = "voltamp_fca.voltamp_fca.permission.activity_type.activity_type_query"
 const activityTypeFilters = computed(() => ({ employee: employee.data.name }))
 
 function linkFiltersFor(fieldname) {
@@ -221,21 +221,28 @@ function queryFor(fieldname) {
 	return undefined
 }
 
-const taskProject = createResource({ url: "frappe.client.get_value" })
+const taskProject = createResource({ url: "voltamp_fca.voltamp_fca.permission.task.get_task_project" })
 
 // Auto-fill Project from the selected Task's own project — if the task
 // isn't linked to one, just leave Project as-is.
+//
+// Deliberately not a plain frappe.client.get_value call: Task's role
+// permissions don't grant Employee-role users blanket read access (see
+// task_query_conditions in voltamp_fca), so that would silently fail for
+// any Task without an incidental DocShare. get_task_project mirrors
+// task_query's own _assign-based scoping instead, so it works for every
+// Task actually assigned to the employee.
 watch(
 	() => timesheetDetail.value.task,
 	(taskName) => {
 		if (isFieldLocked("task") || !taskName) return
 
 		taskProject.submit(
-			{ doctype: "Task", filters: { name: taskName }, fieldname: "project" },
+			{ task: taskName, employee: employee.data.name },
 			{
-				onSuccess(data) {
-					if (data?.project) {
-						timesheetDetail.value = { ...timesheetDetail.value, project: data.project }
+				onSuccess(project) {
+					if (project) {
+						timesheetDetail.value = { ...timesheetDetail.value, project }
 					}
 				},
 			}
@@ -412,8 +419,17 @@ watch(
 	{ immediate: true }
 )
 
-// Recompute whether the last OUT's Timesheet is still a draft, so the
-// "Submit Timesheet" button state survives a page reload, not just this session.
+// Recompute whether the last OUT's Timesheet is still awaiting the "Submit
+// Timesheet" click, so that button's state survives a page reload, not just
+// this session.
+//
+// docstatus alone can't tell this apart: voltamp_fca's Timesheet Approval
+// workflow only reaches docstatus 1 at "Approved" - clicking Submit
+// Timesheet just moves Draft -> Pending Approval, which is still docstatus
+// 0. Checking docstatus alone would keep re-offering "Submit Timesheet"
+// forever after it was already clicked, blocking the next Check In. So this
+// also needs workflow_state, to distinguish "still Draft" from "already
+// submitted, awaiting a Project Manager's approval".
 watch(
 	() => [lastLog.value?.log_type, lastLog.value?.timesheet],
 	([logType, timesheetName]) => {
@@ -423,10 +439,11 @@ watch(
 		}
 
 		timesheetDocstatus.submit(
-			{ doctype: "Timesheet", filters: { name: timesheetName }, fieldname: "docstatus" },
+			{ doctype: "Timesheet", filters: { name: timesheetName }, fieldname: ["docstatus", "workflow_state"] },
 			{
 				onSuccess(data) {
-					pendingTimesheet.value = data?.docstatus === 0 ? timesheetName : null
+					const stillDraft = data?.docstatus === 0 && data?.workflow_state !== "Pending Approval"
+					pendingTimesheet.value = stillDraft ? timesheetName : null
 				},
 				onError() {
 					pendingTimesheet.value = null

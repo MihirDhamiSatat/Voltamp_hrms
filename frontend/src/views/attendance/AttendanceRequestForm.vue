@@ -19,13 +19,14 @@
 				<template #location_section-action>
 					<Button
 						variant="ghost"
-						size="lg"
+						size="sm"
 						:loading="isFetchingLocation"
 						@click="fetchLiveLocation"
 					>
-						<template #icon>
-							<img :src="locationIcon" class="h-7 w-7" alt="" />
+						<template #prefix>
+							<img :src="locationIcon" class="h-4 w-4" alt="" />
 						</template>
+						{{ __("Get Location") }}
 					</Button>
 				</template>
 
@@ -84,6 +85,17 @@ import locationIcon from "@/assets/location.avif"
 
 const employee = inject("$employee")
 const __ = inject("$translate")
+const dayjs = inject("$dayjs")
+
+// A Backdated Timesheet's applicable date is From Date. It must be strictly
+// before today (not today, not a future date), and only within a 36-hour
+// window of that date/time - past that, it can no longer be created. This
+// is a client-side mirror of the server-side check (the authoritative
+// enforcement lives in voltamp_fca's Attendance Request validate hook) so
+// the user gets immediate, specific feedback instead of a round-trip.
+// Scoped to fresh creation only (!props.id) - editing/resubmitting an
+// already-created request isn't affected by this rule.
+const BACKDATED_WINDOW_HOURS = 36
 
 const props = defineProps({
 	id: {
@@ -109,7 +121,7 @@ const activityTypeEmployee = computed(() => attendanceRequest.value.employee || 
 // applies the date range below (overlap, not containment: a task matches if
 // its own start/end span touches the filter window at all — its start is
 // on/before the filter's end, and its end is on/after the filter's start).
-const taskQuery = "voltamp_fca.voltamp_fca.permissions.task_query"
+const taskQuery = "voltamp_fca.voltamp_fca.permission.task.task_query"
 const taskLinkFilters = computed(() => {
 	const { from_date, to_date } = taskDateFilter.value
 	const filters = { employee: activityTypeEmployee.value }
@@ -131,13 +143,45 @@ const formFields = createResource({
 	params: { doctype: "Attendance Request" },
 	auto: true,
 	transform(data) {
-		if (props.id) return data
-		return data.filter(
-			(field) =>
-				!["employee", "employee_name", "status", "company", "timesheet", "shift"].includes(
-					field.fieldname
-				)
-		)
+		if (!props.id) {
+			data = data.filter(
+				(field) =>
+					!["employee", "employee_name", "status", "company", "timesheet", "shift"].includes(
+						field.fieldname
+					)
+			)
+		}
+
+		for (const field of data) {
+			if (["half_day", "include_holidays"].includes(field.fieldname)) {
+				field.hidden = 1
+			}
+			if (field.fieldname === "location_address") {
+				field.reqd = 1
+				// Only fillable via the live-location button, not typed by hand.
+				field.read_only = 1
+			}
+			if (["location_address", "latitude", "longitude"].includes(field.fieldname)) {
+				// Keep these visible (as empty, disabled inputs) even in a
+				// read-only view of the form, instead of vanishing when unset.
+				field.showEmptyWhenReadOnly = true
+			}
+		}
+
+		// Move the whole Location section above Reason, per the requested layout.
+		const locationStart = data.findIndex((field) => field.fieldname === "location_section")
+		if (locationStart !== -1) {
+			let locationEnd = data.findIndex(
+				(field, i) => i > locationStart && field.fieldtype === "Section Break"
+			)
+			if (locationEnd === -1) locationEnd = data.length
+			const locationFields = data.splice(locationStart, locationEnd - locationStart)
+
+			const reasonIndex = data.findIndex((field) => field.fieldname === "reason_section")
+			data.splice(reasonIndex === -1 ? data.length : reasonIndex, 0, ...locationFields)
+		}
+
+		return data
 	},
 })
 
@@ -160,7 +204,7 @@ watch(
 	() => {
 		const activityTypeField = formFields.data?.find((field) => field.fieldname === "activity_type")
 		if (!activityTypeField) return
-		activityTypeField.query = "voltamp_fca.voltamp_fca.permissions.activity_type_query"
+		activityTypeField.query = "voltamp_fca.voltamp_fca.permission.activity_type.activity_type_query"
 		activityTypeField.linkFilters = { employee: activityTypeEmployee.value }
 	},
 	{ immediate: true }
@@ -168,7 +212,14 @@ watch(
 
 // Auto-fill Project from the selected Task's own project — if the task isn't
 // linked to one, just leave Project as-is.
-const taskProject = createResource({ url: "frappe.client.get_value" })
+//
+// Deliberately not a plain frappe.client.get_value call: Task's role
+// permissions don't grant Employee-role users blanket read access (see
+// task_query_conditions in voltamp_fca), so that would silently fail for
+// any Task without an incidental DocShare. get_task_project mirrors
+// task_query's own _assign-based scoping instead, so it works for every
+// Task actually assigned to the employee.
+const taskProject = createResource({ url: "voltamp_fca.voltamp_fca.permission.task.get_task_project" })
 
 watch(
 	() => attendanceRequest.value.task,
@@ -176,10 +227,10 @@ watch(
 		if (!taskName) return
 
 		taskProject.submit(
-			{ doctype: "Task", filters: { name: taskName }, fieldname: "project" },
+			{ task: taskName, employee: activityTypeEmployee.value },
 			{
-				onSuccess(data) {
-					if (data?.project) attendanceRequest.value.project = data.project
+				onSuccess(project) {
+					if (project) attendanceRequest.value.project = project
 				},
 			}
 		)
@@ -342,15 +393,41 @@ function setFormReadOnly() {
 }
 
 function validateDates(from_date, to_date) {
-	if (!(from_date && to_date)) return
-
-	const error_message = from_date > to_date ? __("To Date cannot be before From Date") : ""
-
 	const from_date_field = formFields.data.find((field) => field.fieldname === "from_date")
+	if (!from_date_field) return
+
+	let error_message = ""
+
+	// Only enforced on fresh creation - editing/resubmitting an
+	// already-created request shouldn't retroactively break just because
+	// the 36-hour window has since passed.
+	if (!props.id && from_date) {
+		const from = dayjs(from_date)
+
+		if (!from.isBefore(dayjs().startOf("day"))) {
+			error_message = __(
+				"Backdated Timesheet can only be created for a previous date, not today or a future date."
+			)
+		} else if (dayjs().isAfter(from.add(BACKDATED_WINDOW_HOURS, "hour"))) {
+			error_message = __(
+				"Backdated Timesheet can only be created within 36 hours of the applicable date/time. The allowed time window has expired."
+			)
+		}
+	}
+
+	if (!error_message && from_date && to_date && from_date > to_date) {
+		error_message = __("To Date cannot be before From Date")
+	}
+
 	from_date_field.error_message = error_message
 }
 
 function validateForm() {
 	attendanceRequest.value.employee = employee.data.name
+
+	// Re-run right before submit, not just reactively on field change - the
+	// 36-hour window can expire purely from time passing while the form
+	// sits open, with no field ever being touched again.
+	validateDates(attendanceRequest.value.from_date, attendanceRequest.value.to_date)
 }
 </script>

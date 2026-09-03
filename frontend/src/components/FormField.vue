@@ -30,6 +30,7 @@
 			:doctype="props.options"
 			:modelValue="modelValue"
 			:filters="props.linkFilters"
+			:query="props.query"
 			:disabled="isReadOnly"
 			@update:modelValue="(v) => emit('update:modelValue', v)"
 		/>
@@ -165,6 +166,7 @@ const props = defineProps({
 	label: String,
 	options: [String, Array],
 	linkFilters: Object,
+	query: String,
 	documentList: Array,
 	readOnly: [Boolean, Number],
 	reqd: [Boolean, Number],
@@ -179,13 +181,22 @@ const props = defineProps({
 		type: Boolean,
 		default: true,
 	},
+	// Read-only + empty fields are hidden entirely by default (see showField
+	// below) - this opts a specific field out of that, so it still renders
+	// (as an empty, disabled input) even with no value.
+	showEmptyWhenReadOnly: {
+		type: Boolean,
+		default: false,
+	},
 })
 
 const emit = defineEmits(["change", "update:modelValue"])
 const dayjs = inject("$dayjs")
 
 const showField = computed(() => {
-	if (props.readOnly && !isLayoutField.value && !props.modelValue) return false
+	if (props.readOnly && !isLayoutField.value && !props.modelValue && !props.showEmptyWhenReadOnly) {
+		return false
+	}
 
 	return props.fieldtype !== "Table" && !props.hidden
 })

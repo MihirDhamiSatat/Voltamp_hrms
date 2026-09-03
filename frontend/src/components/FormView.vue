@@ -118,6 +118,7 @@
 									:label="__(field.label, null, props.doctype)"
 									:options="field.options"
 									:linkFilters="field.linkFilters"
+									:query="field.query"
 									:documentList="field.documentList"
 									:readOnly="isFieldReadOnly(field)"
 									:reqd="Boolean(field.reqd)"
@@ -126,7 +127,10 @@
 									:minDate="field.minDate"
 									:maxDate="field.maxDate"
 									:addSectionPadding="fieldList[0].name !== field.name"
+									:showEmptyWhenReadOnly="Boolean(field.showEmptyWhenReadOnly)"
 								/>
+
+								<slot :name="`${field.fieldname}-after`"></slot>
 							</template>
 
 							<!-- Attachment upload -->
@@ -172,6 +176,7 @@
 							:label="__(field.label, null, props.doctype)"
 							:options="field.options"
 							:linkFilters="field.linkFilters"
+							:query="field.query"
 							:documentList="field.documentList"
 							:readOnly="isFieldReadOnly(field)"
 							:reqd="Boolean(field.reqd)"
@@ -179,7 +184,10 @@
 							:errorMessage="field.error_message"
 							:minDate="field.minDate"
 							:maxDate="field.maxDate"
+							:showEmptyWhenReadOnly="Boolean(field.showEmptyWhenReadOnly)"
 						/>
+
+						<slot :name="`${field.fieldname}-after`"></slot>
 					</template>
 
 					<!-- Attachment upload -->
@@ -683,10 +691,23 @@ function validateMandatoryFields() {
 		)
 		.map((field) => field.label)
 
-	if (errorFields.length) {
-		formErrorMessage.value = `${errorFields.join(", ")} ${
-			errorFields.length > 1 ? "fields are mandatory" : "field is mandatory"
-		}`
+	// A field can also carry its own custom validation failure (e.g. date
+	// range/window checks set via field.error_message) - block submission on
+	// those too, not just missing required fields.
+	const invalidFields = props.fields.filter((field) => field.error_message)
+
+	if (errorFields.length || invalidFields.length) {
+		const messages = []
+		if (errorFields.length) {
+			messages.push(
+				`${errorFields.join(", ")} ${
+					errorFields.length > 1 ? "fields are mandatory" : "field is mandatory"
+				}`
+			)
+		}
+		messages.push(...invalidFields.map((field) => field.error_message))
+
+		formErrorMessage.value = messages.join(". ")
 		return false
 	} else {
 		formErrorMessage.value = ""

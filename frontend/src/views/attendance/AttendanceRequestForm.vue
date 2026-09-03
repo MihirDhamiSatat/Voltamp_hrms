@@ -10,9 +10,32 @@
 				:fields="formFields.data"
 				:id="props.id"
 				@validateForm="validateForm"
+				@formReloaded="skipNextAddressGeocode = true"
 			>
 				<template #timesheet_details_section-action>
 					<Button variant="ghost" icon="filter" @click="isTaskFilterOpen = true" />
+				</template>
+
+				<template #location_section-action>
+					<Button
+						variant="ghost"
+						size="sm"
+						:loading="isFetchingLocation"
+						@click="fetchLiveLocation"
+					>
+						<template #prefix>
+							<img :src="locationIcon" class="h-4 w-4" alt="" />
+						</template>
+						{{ __("Get Location") }}
+					</Button>
+				</template>
+
+				<template #location_address-after>
+					<LocationMap
+						:latitude="attendanceRequest.latitude"
+						:longitude="attendanceRequest.longitude"
+						:status="locationStatus"
+					/>
 				</template>
 			</FormView>
 
@@ -51,15 +74,28 @@
 
 <script setup>
 import { IonPage, IonContent } from "@ionic/vue"
-import { createResource } from "frappe-ui"
+import { createResource, debounce } from "frappe-ui"
 import { ref, computed, watch, inject } from "vue"
 
 import FormView from "@/components/FormView.vue"
 import FormField from "@/components/FormField.vue"
 import CustomIonModal from "@/components/CustomIonModal.vue"
+import LocationMap from "@/components/LocationMap.vue"
+import locationIcon from "@/assets/location.avif"
 
 const employee = inject("$employee")
 const __ = inject("$translate")
+const dayjs = inject("$dayjs")
+
+// A Backdated Timesheet's applicable date is From Date. It must be strictly
+// before today (not today, not a future date), and only within a 36-hour
+// window of that date/time - past that, it can no longer be created. This
+// is a client-side mirror of the server-side check (the authoritative
+// enforcement lives in voltamp_fca's Attendance Request validate hook) so
+// the user gets immediate, specific feedback instead of a round-trip.
+// Scoped to fresh creation only (!props.id) - editing/resubmitting an
+// already-created request isn't affected by this rule.
+const BACKDATED_WINDOW_HOURS = 36
 
 const props = defineProps({
 	id: {
@@ -73,13 +109,22 @@ const attendanceRequest = ref({})
 
 const isTaskFilterOpen = ref(false)
 const taskDateFilter = ref({ from_date: null, to_date: null })
+const locationStatus = ref("")
 
-// Overlap, not containment: a task matches if its own start/end span
-// touches the filter window at all — its start is on/before the filter's
-// end, and its end is on/after the filter's start.
+// Before save, the form has no employee picker (it's always the current
+// user's own request), so fall back to the logged-in employee until the doc
+// actually carries one (e.g. when viewing/editing an existing request).
+const activityTypeEmployee = computed(() => attendanceRequest.value.employee || employee.data.name)
+
+// Task must only list Tasks assigned (via "Assign To") to this employee - not
+// every Task in the system - scoped server-side via `task_query`, which also
+// applies the date range below (overlap, not containment: a task matches if
+// its own start/end span touches the filter window at all — its start is
+// on/before the filter's end, and its end is on/after the filter's start).
+const taskQuery = "voltamp_fca.voltamp_fca.permission.task.task_query"
 const taskLinkFilters = computed(() => {
 	const { from_date, to_date } = taskDateFilter.value
-	const filters = {}
+	const filters = { employee: activityTypeEmployee.value }
 	if (to_date) filters.exp_start_date = ["<=", to_date]
 	if (from_date) filters.exp_end_date = [">=", from_date]
 	return filters
@@ -89,30 +134,108 @@ function clearTaskFilter() {
 	taskDateFilter.value = { from_date: null, to_date: null }
 }
 
-watch(
-	() => [taskLinkFilters.value, formFields.data],
-	() => {
-		const taskField = formFields.data?.find((field) => field.fieldname === "task")
-		if (taskField) taskField.linkFilters = taskLinkFilters.value
-	},
-	{ deep: true }
-)
-
 // get form fields
+// NOTE: must be declared before the watchers below - they read formFields.data
+// (one of them with `immediate: true`, which runs synchronously during setup),
+// so declaring this later would reference formFields before initialization.
 const formFields = createResource({
 	url: "hrms.api.get_doctype_fields",
 	params: { doctype: "Attendance Request" },
 	auto: true,
 	transform(data) {
-		if (props.id) return data
-		return data.filter(
-			(field) =>
-				!["employee", "employee_name", "status", "company", "timesheet", "shift"].includes(
-					field.fieldname
-				)
-		)
+		if (!props.id) {
+			data = data.filter(
+				(field) =>
+					!["employee", "employee_name", "status", "company", "timesheet", "shift"].includes(
+						field.fieldname
+					)
+			)
+		}
+
+		for (const field of data) {
+			if (["half_day", "include_holidays"].includes(field.fieldname)) {
+				field.hidden = 1
+			}
+			if (field.fieldname === "location_address") {
+				field.reqd = 1
+				// Only fillable via the live-location button, not typed by hand.
+				field.read_only = 1
+			}
+			if (["location_address", "latitude", "longitude"].includes(field.fieldname)) {
+				// Keep these visible (as empty, disabled inputs) even in a
+				// read-only view of the form, instead of vanishing when unset.
+				field.showEmptyWhenReadOnly = true
+			}
+		}
+
+		// Move the whole Location section above Reason, per the requested layout.
+		const locationStart = data.findIndex((field) => field.fieldname === "location_section")
+		if (locationStart !== -1) {
+			let locationEnd = data.findIndex(
+				(field, i) => i > locationStart && field.fieldtype === "Section Break"
+			)
+			if (locationEnd === -1) locationEnd = data.length
+			const locationFields = data.splice(locationStart, locationEnd - locationStart)
+
+			const reasonIndex = data.findIndex((field) => field.fieldname === "reason_section")
+			data.splice(reasonIndex === -1 ? data.length : reasonIndex, 0, ...locationFields)
+		}
+
+		return data
 	},
 })
+
+watch(
+	() => [taskLinkFilters.value, formFields.data],
+	() => {
+		const taskField = formFields.data?.find((field) => field.fieldname === "task")
+		if (!taskField) return
+		taskField.query = taskQuery
+		taskField.linkFilters = taskLinkFilters.value
+	},
+	{ deep: true }
+)
+
+// Activity Type must only list the options in the current employee's
+// Employee Skill Map "Work Profile" - scoped via the same whitelisted method
+// the desk form uses.
+watch(
+	() => [activityTypeEmployee.value, formFields.data],
+	() => {
+		const activityTypeField = formFields.data?.find((field) => field.fieldname === "activity_type")
+		if (!activityTypeField) return
+		activityTypeField.query = "voltamp_fca.voltamp_fca.permission.activity_type.activity_type_query"
+		activityTypeField.linkFilters = { employee: activityTypeEmployee.value }
+	},
+	{ immediate: true }
+)
+
+// Auto-fill Project from the selected Task's own project — if the task isn't
+// linked to one, just leave Project as-is.
+//
+// Deliberately not a plain frappe.client.get_value call: Task's role
+// permissions don't grant Employee-role users blanket read access (see
+// task_query_conditions in voltamp_fca), so that would silently fail for
+// any Task without an incidental DocShare. get_task_project mirrors
+// task_query's own _assign-based scoping instead, so it works for every
+// Task actually assigned to the employee.
+const taskProject = createResource({ url: "voltamp_fca.voltamp_fca.permission.task.get_task_project" })
+
+watch(
+	() => attendanceRequest.value.task,
+	(taskName) => {
+		if (!taskName) return
+
+		taskProject.submit(
+			{ task: taskName, employee: activityTypeEmployee.value },
+			{
+				onSuccess(project) {
+					if (project) attendanceRequest.value.project = project
+				},
+			}
+		)
+	}
+)
 
 // form scripts
 watch(
@@ -149,21 +272,162 @@ watch(
 	}
 )
 
+// Location: address -> lat/lng (+ map preview), mirroring the desk form
+// (voltamp_fca/public/js/location_geocode.js). `skipNextAddressGeocode`
+// avoids re-geocoding on the initial doc load / a formReloaded (only actual
+// user edits to the address should trigger a lookup).
+let skipNextAddressGeocode = Boolean(props.id)
+let geocodeToken = 0
+
+const geocodeAddress = createResource({
+	url: "voltamp_fca.voltamp_fca.geolocation.geocode_address",
+})
+
+function setLocationError(message) {
+	const addressField = formFields.data?.find((field) => field.fieldname === "location_address")
+	if (addressField) addressField.error_message = message || ""
+}
+
+const fetchLocation = debounce((address) => {
+	const token = ++geocodeToken
+
+	if (!address) {
+		attendanceRequest.value.latitude = null
+		attendanceRequest.value.longitude = null
+		locationStatus.value = ""
+		setLocationError("")
+		return
+	}
+
+	locationStatus.value = __("Finding location…")
+	setLocationError("")
+
+	geocodeAddress.submit(
+		{ address },
+		{
+			onSuccess(data) {
+				if (token !== geocodeToken) return // stale response, address changed again
+				attendanceRequest.value.latitude = data.latitude
+				attendanceRequest.value.longitude = data.longitude
+				locationStatus.value = ""
+			},
+			onError(error) {
+				if (token !== geocodeToken) return
+				locationStatus.value = ""
+				setLocationError(error.messages?.[0] || __("Could not find that address."))
+			},
+		}
+	)
+}, 500)
+
+watch(
+	() => attendanceRequest.value.location_address,
+	(address) => {
+		if (skipNextAddressGeocode) {
+			skipNextAddressGeocode = false
+			return
+		}
+		fetchLocation((address || "").trim())
+	}
+)
+
+// Location: live GPS -> address (the reverse of the above) - lets the
+// employee stamp their *actual* current position instead of typing an
+// address by hand, which is the whole point of this button as a safety
+// check on backdated entries.
+const isFetchingLocation = ref(false)
+
+const reverseGeocode = createResource({
+	url: "voltamp_fca.voltamp_fca.geolocation.reverse_geocode",
+})
+
+function fetchLiveLocation() {
+	if (!navigator.geolocation) {
+		setLocationError(__("Geolocation is not supported by your current browser"))
+		return
+	}
+
+	isFetchingLocation.value = true
+	locationStatus.value = __("Locating…")
+	setLocationError("")
+
+	navigator.geolocation.getCurrentPosition(
+		(position) => {
+			const { latitude, longitude } = position.coords
+			geocodeToken++ // invalidate any in-flight address -> coords lookup
+
+			reverseGeocode.submit(
+				{ latitude, longitude },
+				{
+					onSuccess(data) {
+						isFetchingLocation.value = false
+						locationStatus.value = ""
+						// this is the real GPS reading — don't let it re-trigger a
+						// (less precise) address -> coords lookup on top of it
+						skipNextAddressGeocode = true
+						attendanceRequest.value.location_address = data.display_name
+						attendanceRequest.value.latitude = data.latitude
+						attendanceRequest.value.longitude = data.longitude
+					},
+					onError(error) {
+						isFetchingLocation.value = false
+						locationStatus.value = ""
+						setLocationError(
+							error.messages?.[0] || __("Could not look up an address for your location.")
+						)
+					},
+				}
+			)
+		},
+		(error) => {
+			isFetchingLocation.value = false
+			locationStatus.value = ""
+			setLocationError(__("Unable to retrieve your location: {0}", [error.message]))
+		}
+	)
+}
+
 // helper functions
 function setFormReadOnly() {
 	formFields.data.map((field) => (field.read_only = true))
 }
 
 function validateDates(from_date, to_date) {
-	if (!(from_date && to_date)) return
-
-	const error_message = from_date > to_date ? __("To Date cannot be before From Date") : ""
-
 	const from_date_field = formFields.data.find((field) => field.fieldname === "from_date")
+	if (!from_date_field) return
+
+	let error_message = ""
+
+	// Only enforced on fresh creation - editing/resubmitting an
+	// already-created request shouldn't retroactively break just because
+	// the 36-hour window has since passed.
+	if (!props.id && from_date) {
+		const from = dayjs(from_date)
+
+		if (!from.isBefore(dayjs().startOf("day"))) {
+			error_message = __(
+				"Backdated Timesheet can only be created for a previous date, not today or a future date."
+			)
+		} else if (dayjs().isAfter(from.add(BACKDATED_WINDOW_HOURS, "hour"))) {
+			error_message = __(
+				"Backdated Timesheet can only be created within 36 hours of the applicable date/time. The allowed time window has expired."
+			)
+		}
+	}
+
+	if (!error_message && from_date && to_date && from_date > to_date) {
+		error_message = __("To Date cannot be before From Date")
+	}
+
 	from_date_field.error_message = error_message
 }
 
 function validateForm() {
 	attendanceRequest.value.employee = employee.data.name
+
+	// Re-run right before submit, not just reactively on field change - the
+	// 36-hour window can expire purely from time passing while the form
+	// sits open, with no field ever being touched again.
+	validateDates(attendanceRequest.value.from_date, attendanceRequest.value.to_date)
 }
 </script>

@@ -215,6 +215,30 @@ function linkFiltersFor(fieldname) {
 	return undefined
 }
 
+// If the employee's Skill Map "Work Profile" only grants a single Activity
+// Type, there's nothing to actually pick from — preselect it instead of
+// making them open a dropdown with one option in it.
+const activityTypeOptions = createResource({
+	url: activityTypeQuery,
+	params: {
+		doctype: "Activity Type",
+		txt: "",
+		searchfield: "name",
+		start: 0,
+		page_len: 2,
+		filters: activityTypeFilters.value,
+	},
+	auto: true,
+	onSuccess: applyDefaultActivityType,
+})
+
+function applyDefaultActivityType() {
+	const options = activityTypeOptions.data
+	if (options?.length === 1 && !timesheetDetail.value.activity_type) {
+		timesheetDetail.value = { ...timesheetDetail.value, activity_type: options[0][0] }
+	}
+}
+
 function queryFor(fieldname) {
 	if (fieldname === "task") return taskQuery
 	if (fieldname === "activity_type") return activityTypeQuery
@@ -310,7 +334,7 @@ const timesheetFields = createResource({
 	url: "hrms.api.get_doctype_fields",
 	params: { doctype: "Employee Checkin" },
 	transform(data) {
-		const order = ["activity_type", "project", "task", "description"]
+		const order = ["task", "project", "activity_type", "description"]
 		const requiredAtCheckin = ["activity_type", "project", "task"]
 		return order
 			.map((name) => data.find((field) => field.fieldname === name))
@@ -383,6 +407,7 @@ watch(
 
 		if (!timesheetName) {
 			timesheetDetail.value = {}
+			applyDefaultActivityType()
 			timesheetDetailLoading.value = false
 			return
 		}
@@ -567,6 +592,7 @@ function submitTimesheet() {
 			onSuccess() {
 				pendingTimesheet.value = null
 				timesheetDetail.value = {}
+				applyDefaultActivityType()
 				checkins.reload()
 				toast({
 					title: __("Success"),

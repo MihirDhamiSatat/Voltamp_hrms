@@ -157,7 +157,6 @@ const formFields = createResource({
 				field.hidden = 1
 			}
 			if (field.fieldname === "location_address") {
-				field.reqd = 1
 				// Only fillable via the live-location button, not typed by hand.
 				field.read_only = 1
 			}

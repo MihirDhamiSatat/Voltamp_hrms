@@ -7,6 +7,7 @@
 		:options="options.data || []"
 		:class="disabled ? 'pointer-events-none' : ''"
 		:disabled="disabled"
+		bodyClasses="max-w-[92vw]"
 		@update:query="handleQueryUpdate"
 	/>
 </template>
@@ -71,6 +72,12 @@ const options = createResource({
 				title = doc.label
 			} else if (doc.description) {
 				title = doc.description.split(",")[0]
+			}
+			// A long title (e.g. a Task subject copied from a commit message)
+			// would otherwise force the dropdown wider than the screen - cap it
+			// so every row stays a single, readable, non-overflowing line.
+			if (title && title.length > 40) {
+				title = `${title.slice(0, 39).trimEnd()}…`
 			}
 			return {
 				label: title ? `${title} : ${doc.value}` : doc.value,

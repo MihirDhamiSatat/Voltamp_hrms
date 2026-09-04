@@ -167,6 +167,22 @@ const formFields = createResource({
 			}
 		}
 
+		// Show Task, Project, Activity Type in that order (matches the Check In
+		// panel's Timesheet Details ordering) instead of the doctype's own
+		// Activity Type -> Project -> Task field order.
+		const timesheetOrder = ["task", "project", "activity_type"]
+		const timesheetIndices = timesheetOrder
+			.map((name) => data.findIndex((field) => field.fieldname === name))
+			.filter((i) => i !== -1)
+		if (timesheetIndices.length) {
+			const anchor = Math.min(...timesheetIndices)
+			const timesheetFields = timesheetOrder
+				.map((name) => data.find((field) => field.fieldname === name))
+				.filter(Boolean)
+			data = data.filter((field) => !timesheetOrder.includes(field.fieldname))
+			data.splice(anchor, 0, ...timesheetFields)
+		}
+
 		// Move the whole Location section above Reason, per the requested layout.
 		const locationStart = data.findIndex((field) => field.fieldname === "location_section")
 		if (locationStart !== -1) {
@@ -198,13 +214,40 @@ watch(
 // Activity Type must only list the options in the current employee's
 // Employee Skill Map "Work Profile" - scoped via the same whitelisted method
 // the desk form uses.
+const activityTypeQuery = "voltamp_fca.voltamp_fca.permission.activity_type.activity_type_query"
+
+// If that Work Profile only grants a single Activity Type, there's nothing
+// to actually pick from — preselect it instead of making the user open a
+// dropdown with one option in it (same behaviour as the Check In panel).
+const activityTypeOptions = createResource({ url: activityTypeQuery })
+
+function applyDefaultActivityType() {
+	const options = activityTypeOptions.data
+	if (options?.length === 1 && !attendanceRequest.value.activity_type) {
+		attendanceRequest.value.activity_type = options[0][0]
+	}
+}
+
 watch(
 	() => [activityTypeEmployee.value, formFields.data],
 	() => {
 		const activityTypeField = formFields.data?.find((field) => field.fieldname === "activity_type")
 		if (!activityTypeField) return
-		activityTypeField.query = "voltamp_fca.voltamp_fca.permission.activity_type.activity_type_query"
+		activityTypeField.query = activityTypeQuery
 		activityTypeField.linkFilters = { employee: activityTypeEmployee.value }
+
+		if (!activityTypeEmployee.value) return
+		activityTypeOptions.submit(
+			{
+				doctype: "Activity Type",
+				txt: "",
+				searchfield: "name",
+				start: 0,
+				page_len: 2,
+				filters: { employee: activityTypeEmployee.value },
+			},
+			{ onSuccess: applyDefaultActivityType }
+		)
 	},
 	{ immediate: true }
 )

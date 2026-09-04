@@ -331,15 +331,31 @@ watch(
 	}
 )
 
-// Location: live GPS -> address (the reverse of the above) - lets the
-// employee stamp their *actual* current position instead of typing an
-// address by hand, which is the whole point of this button as a safety
-// check on backdated entries.
+// Location: live GPS -> address. The GPS fix itself comes straight from the
+// device (position.coords), same as Employee Checkin/Checkout (CheckInPanel.vue).
+// The address lookup, however, is done with a direct fetch from the browser
+// to Nominatim instead of routing through our backend: it's the *server's*
+// outbound call to nominatim.openstreetmap.org that's unreliable on some
+// hosting environments (e.g. Frappe Cloud), not the device's — a normal
+// browser request to that host works the same as visiting any other site.
 const isFetchingLocation = ref(false)
 
-const reverseGeocode = createResource({
-	url: "voltamp_fca.voltamp_fca.geolocation.reverse_geocode",
-})
+async function reverseGeocodeInBrowser(latitude, longitude) {
+	const params = new URLSearchParams({
+		lat: latitude,
+		lon: longitude,
+		format: "json",
+	})
+	const response = await fetch(`https://nominatim.openstreetmap.org/reverse?${params}`, {
+		headers: { Accept: "application/json" },
+	})
+	if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+	const data = await response.json()
+	if (!data || data.error || !data.display_name) throw new Error("No address found")
+
+	return data.display_name
+}
 
 function fetchLiveLocation() {
 	if (!navigator.geolocation) {
@@ -352,38 +368,37 @@ function fetchLiveLocation() {
 	setLocationError("")
 
 	navigator.geolocation.getCurrentPosition(
-		(position) => {
+		async (position) => {
 			const { latitude, longitude } = position.coords
 			geocodeToken++ // invalidate any in-flight address -> coords lookup
 
-			reverseGeocode.submit(
-				{ latitude, longitude },
-				{
-					onSuccess(data) {
-						isFetchingLocation.value = false
-						locationStatus.value = ""
-						// this is the real GPS reading — don't let it re-trigger a
-						// (less precise) address -> coords lookup on top of it
-						skipNextAddressGeocode = true
-						attendanceRequest.value.location_address = data.display_name
-						attendanceRequest.value.latitude = data.latitude
-						attendanceRequest.value.longitude = data.longitude
-					},
-					onError(error) {
-						isFetchingLocation.value = false
-						locationStatus.value = ""
-						setLocationError(
-							error.messages?.[0] || __("Could not look up an address for your location.")
-						)
-					},
-				}
-			)
+			// this is the real GPS reading — don't let it re-trigger a (less
+			// precise) address -> coords lookup on top of it
+			skipNextAddressGeocode = true
+			attendanceRequest.value.latitude = latitude
+			attendanceRequest.value.longitude = longitude
+
+			locationStatus.value = __("Finding address…")
+			try {
+				attendanceRequest.value.location_address = await reverseGeocodeInBrowser(latitude, longitude)
+			} catch {
+				// address lookup failed - the coordinates are still captured above,
+				// so fall back to showing those rather than blocking the user
+				attendanceRequest.value.location_address = __("Latitude: {0}°, Longitude: {1}°", [
+					latitude.toFixed(5),
+					longitude.toFixed(5),
+				])
+			} finally {
+				isFetchingLocation.value = false
+				locationStatus.value = ""
+			}
 		},
 		(error) => {
 			isFetchingLocation.value = false
 			locationStatus.value = ""
 			setLocationError(__("Unable to retrieve your location: {0}", [error.message]))
-		}
+		},
+		{ enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
 	)
 }
 

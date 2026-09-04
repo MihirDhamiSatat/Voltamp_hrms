@@ -87,9 +87,9 @@ const employee = inject("$employee")
 const __ = inject("$translate")
 const dayjs = inject("$dayjs")
 
-// A Backdated Timesheet's applicable date is From Date. It must be strictly
-// before today (not today, not a future date), and only within a 36-hour
-// window of that date/time - past that, it can no longer be created. This
+// A Backdated Timesheet's applicable date is From Date. It must not be a
+// future date, and only within a 36-hour window of that date/time - past
+// that, it can no longer be created. This
 // is a client-side mirror of the server-side check (the authoritative
 // enforcement lives in voltamp_fca's Attendance Request validate hook) so
 // the user gets immediate, specific feedback instead of a round-trip.
@@ -461,10 +461,8 @@ function validateDates(from_date, to_date) {
 	if (!props.id && from_date) {
 		const from = dayjs(from_date)
 
-		if (!from.isBefore(dayjs().startOf("day"))) {
-			error_message = __(
-				"Backdated Timesheet can only be created for a previous date, not today or a future date."
-			)
+		if (from.isAfter(dayjs().endOf("day"))) {
+			error_message = __("Backdated Timesheet cannot be created for a future date.")
 		} else if (dayjs().isAfter(from.add(BACKDATED_WINDOW_HOURS, "hour"))) {
 			error_message = __(
 				"Backdated Timesheet can only be created within 36 hours of the applicable date/time. The allowed time window has expired."

@@ -19,12 +19,27 @@ class OverlappingAttendanceRequestError(frappe.ValidationError):
 
 class AttendanceRequest(Document):
 	def validate(self):
+		if self.is_new():
+			self.validate_creation_permission()
 		validate_active_employee(self.employee)
 		validate_dates(self, self.from_date, self.to_date, False)
 		self.validate_shifts()
 		self.validate_half_day()
 		self.validate_request_overlap()
 		self.validate_no_attendance_to_create()
+
+	def validate_creation_permission(self):
+		# Strictly Projects Manager - no other role (not even System
+		# Manager/HR Manager/HR User) may create a Backdated Timesheet
+		# (Attendance Request) unless they also hold that role. Enforced here
+		# (not just via doctype permissions/UI) so it also covers API calls,
+		# mobile requests, and any insert that bypasses the UI.
+		if "Projects Manager" not in frappe.get_roles():
+			frappe.throw(
+				_("You do not have permission to create a New Backdated Timesheet."),
+				frappe.PermissionError,
+				title=_("Not Permitted"),
+			)
 
 	def validate_half_day(self):
 		if self.half_day:

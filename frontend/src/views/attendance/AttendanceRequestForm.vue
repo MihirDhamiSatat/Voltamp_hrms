@@ -77,6 +77,7 @@ import { IonPage, IonContent } from "@ionic/vue"
 import { createResource, debounce } from "frappe-ui"
 import { ref, computed, watch, inject } from "vue"
 
+import router from "@/router"
 import FormView from "@/components/FormView.vue"
 import FormField from "@/components/FormField.vue"
 import CustomIonModal from "@/components/CustomIonModal.vue"
@@ -84,8 +85,17 @@ import LocationMap from "@/components/LocationMap.vue"
 import locationIcon from "@/assets/location.avif"
 
 const employee = inject("$employee")
+const user = inject("$user")
 const __ = inject("$translate")
 const dayjs = inject("$dayjs")
+
+// Only the Projects Manager role may create a Backdated Timesheet on behalf
+// of another employee - not even System Manager/HR Manager/HR User, unless
+// they also hold this role (an Employee-role user may only use real-time
+// Check-In/Check-Out). Mirrors the check in AttendanceRequest.validate() in
+// hrms/hr/doctype/attendance_request/attendance_request.py - the server
+// re-checks this independently, so this is UX only, not the enforcement.
+const canCreateForOthers = computed(() => Boolean(user.data?.roles?.includes("Projects Manager")))
 
 // A Backdated Timesheet's applicable date is From Date. It must not be a
 // future date, and only within a 36-hour window of that date/time - past
@@ -104,6 +114,18 @@ const props = defineProps({
 	},
 })
 
+// An Employee-role user must not reach the create form at all - only
+// Check-In/Check-Out is available to them. Redirect away as soon as the
+// user's roles are known (they're already loaded by the router's global
+// beforeEach before this component mounts, so this normally fires immediately).
+watch(
+	canCreateForOthers,
+	(allowed) => {
+		if (!props.id && !allowed) router.replace({ name: "Home" })
+	},
+	{ immediate: true }
+)
+
 // reactive object to store form data
 const attendanceRequest = ref({})
 
@@ -111,9 +133,10 @@ const isTaskFilterOpen = ref(false)
 const taskDateFilter = ref({ from_date: null, to_date: null })
 const locationStatus = ref("")
 
-// Before save, the form has no employee picker (it's always the current
-// user's own request), so fall back to the logged-in employee until the doc
-// actually carries one (e.g. when viewing/editing an existing request).
+// Before save, the form only has an employee picker for privileged roles
+// (canCreateForOthers) - everyone else's request is always their own, so
+// fall back to the logged-in employee until the doc actually carries one
+// (e.g. a manager's pick, or when viewing/editing an existing request).
 const activityTypeEmployee = computed(() => attendanceRequest.value.employee || employee.data.name)
 
 // Task must only list Tasks assigned (via "Assign To") to this employee - not
@@ -144,12 +167,21 @@ const formFields = createResource({
 	auto: true,
 	transform(data) {
 		if (!props.id) {
-			data = data.filter(
-				(field) =>
-					!["employee", "employee_name", "status", "company", "timesheet", "shift"].includes(
-						field.fieldname
-					)
-			)
+			const alwaysExcluded = ["employee_name", "status", "company", "timesheet", "shift"]
+			const excluded = canCreateForOthers.value ? alwaysExcluded : [...alwaysExcluded, "employee"]
+			data = data.filter((field) => !excluded.includes(field.fieldname))
+
+			// A Projects Manager (or other privileged role) picks who the
+			// backdated timesheet is for - show Employee right after To Date.
+			if (canCreateForOthers.value) {
+				const employeeIndex = data.findIndex((field) => field.fieldname === "employee")
+				if (employeeIndex !== -1) {
+					const [employeeField] = data.splice(employeeIndex, 1)
+					employeeField.query = "hrms.api.employee_query_for_attendance_request"
+					const toDateIndex = data.findIndex((field) => field.fieldname === "to_date")
+					data.splice(toDateIndex + 1, 0, employeeField)
+				}
+			}
 		}
 
 		for (const field of data) {
@@ -159,6 +191,11 @@ const formFields = createResource({
 			if (field.fieldname === "location_address") {
 				// Only fillable via the live-location button, not typed by hand.
 				field.read_only = 1
+			}
+			if (field.fieldname === "description") {
+				// Task Description isn't reqd on the doctype itself (voltamp_fca's
+				// custom field), but must be mandatory on this form.
+				field.reqd = 1
 			}
 			if (["location_address", "latitude", "longitude"].includes(field.fieldname)) {
 				// Keep these visible (as empty, disabled inputs) even in a
@@ -478,7 +515,12 @@ function validateDates(from_date, to_date) {
 }
 
 function validateForm() {
-	attendanceRequest.value.employee = employee.data.name
+	// A manager creating this on behalf of another employee will have already
+	// set this via the Employee field - only default to "self" when it's
+	// still unset (the normal case, where that field isn't even shown).
+	if (!attendanceRequest.value.employee) {
+		attendanceRequest.value.employee = employee.data.name
+	}
 
 	// Re-run right before submit, not just reactively on field change - the
 	// 36-hour window can expire purely from time passing while the form

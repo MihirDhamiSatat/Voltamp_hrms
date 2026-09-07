@@ -39,6 +39,38 @@ def get_current_user_info() -> dict:
 
 
 @frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def employee_query_for_attendance_request(
+	doctype: str, txt: str, searchfield: str, start: int, page_len: int, filters: dict
+) -> list:
+	# Backs the Employee field on the mobile "Backdated Timesheet" (Attendance
+	# Request) form. Scoped to the same role allowed to create that document,
+	# so an Employee-role user can't use this lookup to pick a target employee
+	# even if the field were exposed to them by a tampered client.
+	if "Projects Manager" not in frappe.get_roles():
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	# frappe.get_list would still apply Employee's own permission query
+	# conditions, which restrict a caller who (like most Projects Managers)
+	# also carries the plain Employee role to just their own record. The role
+	# check above is the real authorization here, so deliberately bypass that
+	# with get_all instead.
+	return frappe.get_all(
+		"Employee",
+		filters={"status": "Active"},
+		or_filters=[
+			["name", "like", f"%{txt}%"],
+			["employee_name", "like", f"%{txt}%"],
+		],
+		fields=["name", "employee_name"],
+		order_by="employee_name asc",
+		limit_start=start,
+		limit_page_length=page_len,
+		as_list=True,
+	)
+
+
+@frappe.whitelist()
 def get_current_employee_info() -> dict:
 	current_user = frappe.session.user
 	employee = frappe.db.get_value(

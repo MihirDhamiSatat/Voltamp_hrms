@@ -320,10 +320,12 @@ function isFieldLocked(fieldname) {
 	return fieldname !== "description" && isCycleActive.value
 }
 
-// Activity Type/Project/Task must be filled before a fresh Check In.
+// Activity Type/Project/Task/Description must all be filled before a fresh Check In.
 const checkinDetailMissing = computed(() => {
 	if (nextAction.value.action !== "IN") return false
-	return ["activity_type", "project", "task"].some((fieldname) => !timesheetDetail.value[fieldname])
+	return ["activity_type", "project", "task", "description"].some(
+		(fieldname) => !timesheetDetail.value[fieldname]
+	)
 })
 
 // Timesheet Details fields live directly on Employee Checkin (added by the
@@ -335,7 +337,7 @@ const timesheetFields = createResource({
 	params: { doctype: "Employee Checkin" },
 	transform(data) {
 		const order = ["task", "project", "activity_type", "description"]
-		const requiredAtCheckin = ["activity_type", "project", "task"]
+		const requiredAtCheckin = ["activity_type", "project", "task", "description"]
 		return order
 			.map((name) => data.find((field) => field.fieldname === name))
 			.filter(Boolean)

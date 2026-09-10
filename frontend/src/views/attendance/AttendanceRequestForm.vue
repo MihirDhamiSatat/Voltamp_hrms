@@ -43,7 +43,7 @@
 						referenceDoctype="Timesheet"
 						:referenceName="attendanceRequest.timesheet || ''"
 						:canWrite="!attendanceRequest.timesheet || canEditTimesheetEvidence"
-						:emptyReferenceHint="__('Submit this request to start adding Work Evidence')"
+						:emptyReferenceHint="__('Pick a From Date to start adding Work Evidence')"
 					/>
 				</template>
 			</FormView>
@@ -299,10 +299,47 @@ watch(
 	{ immediate: true }
 )
 
+// Work Evidence (Voice Note/Upload Photo) needs a real Timesheet to attach
+// to - rather than making the user Submit this whole Attendance Request
+// first just to unlock that, get_or_create_backdated_timesheet_for_evidence
+// hands back a draft Timesheet for employee+From Date as soon as both are
+// known, same as CheckInPanel.vue does before the first real-time Check In.
+// create_and_submit_timesheet (the actual Submit's on_submit hook) later
+// adopts this exact same draft, so anything attached here carries through.
+const preSubmitTimesheetAction = createResource({
+	url: "voltamp_fca.voltamp_fca.attendance_request_timesheet.get_or_create_backdated_timesheet_for_evidence",
+})
+
+let preSubmitTimesheetKey = ""
+
+watch(
+	() => [
+		attendanceRequest.value.docstatus,
+		attendanceRequest.value.from_date,
+		activityTypeEmployee.value,
+	],
+	([docstatus, from_date, employeeId]) => {
+		// Once actually Submitted/Cancelled, `timesheet` is the real, final one
+		// set by create_and_submit_timesheet - never speculatively touch it again.
+		if (docstatus === 1 || docstatus === 2) return
+		if (!from_date || !employeeId) return
+
+		const day = dayjs(from_date).format("YYYY-MM-DD")
+		const key = `${employeeId}:${day}`
+		if (key === preSubmitTimesheetKey) return
+		preSubmitTimesheetKey = key
+
+		preSubmitTimesheetAction.submit(
+			{ employee: employeeId, from_date: day },
+			{ onSuccess: (name) => (attendanceRequest.value.timesheet = name) }
+		)
+	},
+	{ immediate: true }
+)
+
 // Whether the current user may upload/delete Work Evidence on this Backdated
-// Timesheet's linked Timesheet (set only once the Attendance Request has
-// been submitted - see attendance_request_timesheet.create_and_submit_timesheet).
-// Real permission on that Timesheet, not just "it's linked".
+// Timesheet's linked Timesheet. Real permission on that Timesheet, not just
+// "it's linked".
 const timesheetEvidencePermissions = createResource({ url: "frappe.client.get_doc_permissions" })
 const canEditTimesheetEvidence = computed(() => Boolean(timesheetEvidencePermissions.data?.permissions?.write))
 

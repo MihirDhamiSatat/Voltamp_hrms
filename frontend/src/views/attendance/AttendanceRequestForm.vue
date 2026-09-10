@@ -37,6 +37,15 @@
 						:status="locationStatus"
 					/>
 				</template>
+
+				<template #description-after>
+					<WorkEvidenceSection
+						referenceDoctype="Timesheet"
+						:referenceName="attendanceRequest.timesheet || ''"
+						:canWrite="!attendanceRequest.timesheet || canEditTimesheetEvidence"
+						:emptyReferenceHint="__('Submit this request to start adding Work Evidence')"
+					/>
+				</template>
 			</FormView>
 
 			<CustomIonModal :isOpen="isTaskFilterOpen" @did-dismiss="isTaskFilterOpen = false">
@@ -82,6 +91,7 @@ import FormView from "@/components/FormView.vue"
 import FormField from "@/components/FormField.vue"
 import CustomIonModal from "@/components/CustomIonModal.vue"
 import LocationMap from "@/components/LocationMap.vue"
+import WorkEvidenceSection from "@/components/work-evidence/WorkEvidenceSection.vue"
 import locationIcon from "@/assets/location.avif"
 
 const employee = inject("$employee")
@@ -285,6 +295,23 @@ watch(
 			},
 			{ onSuccess: applyDefaultActivityType }
 		)
+	},
+	{ immediate: true }
+)
+
+// Whether the current user may upload/delete Work Evidence on this Backdated
+// Timesheet's linked Timesheet (set only once the Attendance Request has
+// been submitted - see attendance_request_timesheet.create_and_submit_timesheet).
+// Real permission on that Timesheet, not just "it's linked".
+const timesheetEvidencePermissions = createResource({ url: "frappe.client.get_doc_permissions" })
+const canEditTimesheetEvidence = computed(() => Boolean(timesheetEvidencePermissions.data?.permissions?.write))
+
+watch(
+	() => attendanceRequest.value.timesheet,
+	(timesheetName) => {
+		if (timesheetName) {
+			timesheetEvidencePermissions.submit({ doctype: "Timesheet", docname: timesheetName })
+		}
 	},
 	{ immediate: true }
 )

@@ -39,6 +39,14 @@
 				/>
 			</div>
 
+			<WorkEvidenceSection
+				class="mt-3"
+				referenceDoctype="Timesheet"
+				:referenceName="activeTimesheet"
+				:canWrite="!isCycleActive || canEditTimesheetEvidence"
+				:emptyReferenceHint="__('Preparing Work Evidence…')"
+			/>
+
 			<Button
 				v-if="pendingTimesheet"
 				class="mt-4 mb-1 drop-shadow-sm py-5 text-base disabled:bg-gray-700"
@@ -160,6 +168,7 @@ import { computed, inject, ref, watch, onMounted, onBeforeUnmount } from "vue"
 
 import FormField from "@/components/FormField.vue"
 import CustomIonModal from "@/components/CustomIonModal.vue"
+import WorkEvidenceSection from "@/components/work-evidence/WorkEvidenceSection.vue"
 import { formatTimestamp } from "@/utils/formatters"
 import { settings } from "@/data/settings"
 
@@ -297,7 +306,11 @@ const checkins = createListResource({
 checkins.reload()
 
 const lastLog = computed(() => {
-	if (checkins.list.loading || !checkins.data) return {}
+	// A brand-new employee with zero check-ins ever has checkins.data === []
+	// once loaded - still falsy-empty, but truthy as an array, so the old
+	// `!checkins.data` check alone let it fall through to checkins.data[0]
+	// (undefined) instead of the {} fallback every other read here assumes.
+	if (checkins.list.loading || !checkins.data?.length) return {}
 	return checkins.data[0]
 })
 
@@ -319,6 +332,71 @@ const isCycleActive = computed(() => lastLog.value?.log_type === "IN" || !!pendi
 function isFieldLocked(fieldname) {
 	return fieldname !== "description" && isCycleActive.value
 }
+
+// Work Evidence needs a real Timesheet to attach to. While a cycle is
+// active (checked in, or checked out but not yet submitted) that's
+// lastLog.timesheet - the same Timesheet document the whole cycle through,
+// since handle_check_in/handle_check_out both reuse it rather than creating
+// a new one. Once the cycle ends (Submit Timesheet succeeds), lastLog.timesheet
+// still points at that now-submitted Timesheet forever after (Employee
+// Checkin rows aren't rewritten by submission) - it must NOT keep being
+// shown as "the" Work Evidence reference, or a finished Timesheet's old
+// evidence would appear to carry over into the next one. So outside of an
+// active cycle, fall back to preCheckinTimesheet - a fresh draft fetched/
+// created via get_or_create_active_timesheet below - instead.
+const activeTimesheet = computed(() => (isCycleActive.value ? lastLog.value?.timesheet : "") || preCheckinTimesheet.value || "")
+
+// Whether the current user may upload/delete Work Evidence on activeTimesheet
+// - real permission on that Timesheet (see WorkEvidenceSection's own
+// canWrite prop doc), not just "a timesheet is linked". Only meaningful
+// while a cycle is active (lastLog.timesheet is a real, possibly
+// permission-restricted Timesheet); outside of one, activeTimesheet is
+// always the user's own fresh draft, which they can always write to.
+const timesheetEvidencePermissions = createResource({ url: "frappe.client.get_doc_permissions" })
+const canEditTimesheetEvidence = computed(() => Boolean(timesheetEvidencePermissions.data?.permissions?.write))
+
+watch(
+	() => (isCycleActive.value ? lastLog.value?.timesheet : ""),
+	(timesheetName) => {
+		if (timesheetName) {
+			timesheetEvidencePermissions.submit({ doctype: "Timesheet", docname: timesheetName })
+		}
+	},
+	{ immediate: true }
+)
+
+// get_or_create_active_timesheet mirrors handle_check_in's own
+// get_or_create_draft_timesheet dedup (employee + today's date, excluding
+// a Timesheet already submitted for approval) - so the Timesheet fetched/
+// created here is the exact same one Check In later finds and appends a
+// time_log row to. Fetched whenever there's no cycle already active (a
+// fresh day before the first Check In, or right after Submit Timesheet
+// clears the previous cycle) so Work Evidence always has a live, writable,
+// evidence-free Timesheet to attach to.
+const activeTimesheetAction = createResource({
+	url: "voltamp_fca.voltamp_fca.employee_checkin_timesheet.get_or_create_active_timesheet",
+})
+const preCheckinTimesheet = ref("")
+
+watch(
+	() => [checkins.list.loading, isCycleActive.value, settings.data?.allow_employee_checkin_from_mobile_app],
+	([loading, cycleActive, checkinEnabled]) => {
+		// Wait for the checkin list to settle so an active cycle's own real
+		// Timesheet (lastLog.timesheet) always wins over creating a new one.
+		if (loading || cycleActive || !checkinEnabled) return
+		if (preCheckinTimesheet.value || activeTimesheetAction.loading) return
+
+		activeTimesheetAction.submit(
+			{},
+			{
+				onSuccess(name) {
+					preCheckinTimesheet.value = name
+				},
+			}
+		)
+	},
+	{ immediate: true }
+)
 
 // Activity Type/Project/Task/Description must all be filled before a fresh Check In.
 const checkinDetailMissing = computed(() => {
@@ -593,6 +671,7 @@ function submitTimesheet() {
 		{
 			onSuccess() {
 				pendingTimesheet.value = null
+				preCheckinTimesheet.value = ""
 				timesheetDetail.value = {}
 				applyDefaultActivityType()
 				checkins.reload()

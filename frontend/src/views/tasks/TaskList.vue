@@ -99,6 +99,12 @@
 							<span class="text-xs text-gray-500">{{ __("Description") }}</span>
 							<div class="text-sm text-gray-800 prose-sm" v-html="selectedTask.description"></div>
 						</div>
+
+						<WorkEvidenceSection
+							referenceDoctype="Task"
+							:referenceName="selectedTask.name"
+							:canWrite="canEditTaskEvidence"
+						/>
 					</div>
 				</div>
 			</template>
@@ -109,11 +115,12 @@
 <script setup>
 import { IonPage, IonHeader, IonContent, IonRefresher, IonRefresherContent } from "@ionic/vue"
 import { Badge, FeatherIcon, LoadingIndicator, createResource } from "frappe-ui"
-import { inject, ref } from "vue"
+import { computed, inject, ref } from "vue"
 import { useRouter } from "vue-router"
 
 import TaskItem from "@/components/TaskItem.vue"
 import CustomIonModal from "@/components/CustomIonModal.vue"
+import WorkEvidenceSection from "@/components/work-evidence/WorkEvidenceSection.vue"
 
 const __ = inject("$translate")
 const dayjs = inject("$dayjs")
@@ -135,9 +142,17 @@ function handleRefresh(event) {
 const isDetailOpen = ref(false)
 const selectedTask = ref(null)
 
+// Whether the current user may upload/delete Work Evidence on the selected
+// Task - mirrors the actual write permission (frappe.client.get_doc_permissions),
+// not just "the task is visible" (get_my_tasks also returns Tasks a manager
+// can only view, not edit).
+const taskPermissions = createResource({ url: "frappe.client.get_doc_permissions" })
+const canEditTaskEvidence = computed(() => Boolean(taskPermissions.data?.permissions?.write))
+
 function openTaskDetail(task) {
 	selectedTask.value = task
 	isDetailOpen.value = true
+	taskPermissions.submit({ doctype: "Task", docname: task.name })
 }
 
 const STATUS_THEME = {
